@@ -20,6 +20,7 @@ class QuestionCreate(BaseModel):
     correct_answer: str
     hint: Optional[str] = None
     options: Optional[list[str]] = None
+    code_programming_language: Optional[str] = None
     code_sample_input: Optional[str] = None
     code_sample_output: Optional[str] = None
     code_hidden_input: Optional[str] = None
@@ -49,6 +50,7 @@ class QuestionUpdate(BaseModel):
     correct_answer: Optional[str] = None
     hint: Optional[str] = None
     options: Optional[list[str]] = None
+    code_programming_language: Optional[str] = None
     code_sample_input: Optional[str] = None
     code_sample_output: Optional[str] = None
     code_hidden_input: Optional[str] = None

@@ -63,6 +63,7 @@ class Question(db.Model):
     # Multiple choice options stored as JSON string
     options = db.Column(db.Text, nullable=True)
     # Coding question fields
+    code_programming_language = db.Column(db.String(64), nullable=True)
     code_sample_input = db.Column(db.Text, nullable=True)
     code_sample_output = db.Column(db.Text, nullable=True)
     code_hidden_input = db.Column(db.Text, nullable=True)
