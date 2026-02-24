@@ -1,28 +1,28 @@
-"""Question CRUD and evaluation routes."""
+"""Question CRUD and evaluation routes — questions are independent entities."""
 import json
 
 from flask import Blueprint, jsonify, request
 from pydantic import ValidationError
 
 from src.extensions import db
-from src.models.models import Question, QuestionBank, QuestionCategory, QuestionDifficulty
+from src.models.models import Question, QuestionCategory, QuestionDifficulty
 from src.schemas import AnswerSubmit, QuestionCreate, QuestionImport, QuestionUpdate
 from src.services.auth import token_required
 from src.services.evaluator import evaluate_coding, evaluate_general_knowledge, evaluate_multiple_choice
 
-question_bp = Blueprint("questions", __name__, url_prefix="/api/banks/<int:bank_id>/questions")
+question_bp = Blueprint("questions", __name__, url_prefix="/api/questions")
 
 
 def _serialize_question(q):
     data = {
         "id": q.id,
-        "question_bank_id": q.question_bank_id,
         "question_number": q.question_number,
         "category": q.category.value,
         "difficulty": q.difficulty.value,
         "description": q.description,
         "correct_answer": q.correct_answer,
         "hint": q.hint,
+        "question_banks": [{"id": b.id, "name": b.name} for b in q.question_banks],
         "times_passed": q.times_passed,
         "times_hint_used": q.times_hint_used,
         "times_incorrect": q.times_incorrect,
@@ -43,49 +43,39 @@ def _serialize_question(q):
     return data
 
 
-def _next_question_number(bank_id):
-    """Get the next sequential question number for a bank."""
-    last = Question.query.filter_by(question_bank_id=bank_id).order_by(Question.question_number.desc()).first()
+def _next_question_number():
+    """Get the next global sequential question number."""
+    last = Question.query.order_by(Question.question_number.desc()).first()
     return (last.question_number + 1) if last else 1
 
 
 @question_bp.route("", methods=["GET"])
 @token_required
-def list_questions(bank_id):
-    """List all questions in a bank.
+def list_questions():
+    """List all questions.
     ---
     tags:
       - Questions
     security:
       - Bearer: []
-    parameters:
-      - name: bank_id
-        in: path
-        type: integer
-        required: true
     responses:
       200:
-        description: List of questions
+        description: List of all questions
     """
-    QuestionBank.query.get_or_404(bank_id)
-    questions = Question.query.filter_by(question_bank_id=bank_id).order_by(Question.question_number).all()
+    questions = Question.query.order_by(Question.question_number).all()
     return jsonify([_serialize_question(q) for q in questions])
 
 
 @question_bp.route("", methods=["POST"])
 @token_required
-def create_question(bank_id):
-    """Create a new question in a bank.
+def create_question():
+    """Create a new question (not assigned to any bank yet).
     ---
     tags:
       - Questions
     security:
       - Bearer: []
     parameters:
-      - name: bank_id
-        in: path
-        type: integer
-        required: true
       - name: body
         in: body
         schema:
@@ -124,15 +114,13 @@ def create_question(bank_id):
       201:
         description: Question created
     """
-    QuestionBank.query.get_or_404(bank_id)
     try:
         data = QuestionCreate(**request.get_json())
     except ValidationError as e:
         return jsonify({"error": e.errors()}), 400
 
     q = Question(
-        question_bank_id=bank_id,
-        question_number=_next_question_number(bank_id),
+        question_number=_next_question_number(),
         category=QuestionCategory(data.category),
         difficulty=QuestionDifficulty(data.difficulty),
         description=data.description,
@@ -151,7 +139,7 @@ def create_question(bank_id):
 
 @question_bp.route("/<int:question_id>", methods=["GET"])
 @token_required
-def get_question(bank_id, question_id):
+def get_question(question_id):
     """Get a question by ID.
     ---
     tags:
@@ -159,10 +147,6 @@ def get_question(bank_id, question_id):
     security:
       - Bearer: []
     parameters:
-      - name: bank_id
-        in: path
-        type: integer
-        required: true
       - name: question_id
         in: path
         type: integer
@@ -171,13 +155,13 @@ def get_question(bank_id, question_id):
       200:
         description: Question details
     """
-    q = Question.query.filter_by(id=question_id, question_bank_id=bank_id).first_or_404()
+    q = Question.query.get_or_404(question_id)
     return jsonify(_serialize_question(q))
 
 
 @question_bp.route("/<int:question_id>", methods=["PUT"])
 @token_required
-def update_question(bank_id, question_id):
+def update_question(question_id):
     """Update a question.
     ---
     tags:
@@ -185,10 +169,6 @@ def update_question(bank_id, question_id):
     security:
       - Bearer: []
     parameters:
-      - name: bank_id
-        in: path
-        type: integer
-        required: true
       - name: question_id
         in: path
         type: integer
@@ -197,7 +177,7 @@ def update_question(bank_id, question_id):
       200:
         description: Question updated
     """
-    q = Question.query.filter_by(id=question_id, question_bank_id=bank_id).first_or_404()
+    q = Question.query.get_or_404(question_id)
     try:
         data = QuestionUpdate(**request.get_json())
     except ValidationError as e:
@@ -230,18 +210,14 @@ def update_question(bank_id, question_id):
 
 @question_bp.route("/<int:question_id>", methods=["DELETE"])
 @token_required
-def delete_question(bank_id, question_id):
-    """Delete a question.
+def delete_question(question_id):
+    """Delete a question (removes from all banks too).
     ---
     tags:
       - Questions
     security:
       - Bearer: []
     parameters:
-      - name: bank_id
-        in: path
-        type: integer
-        required: true
       - name: question_id
         in: path
         type: integer
@@ -250,7 +226,7 @@ def delete_question(bank_id, question_id):
       200:
         description: Question deleted
     """
-    q = Question.query.filter_by(id=question_id, question_bank_id=bank_id).first_or_404()
+    q = Question.query.get_or_404(question_id)
     db.session.delete(q)
     db.session.commit()
     return jsonify({"message": "Deleted"})
@@ -260,7 +236,7 @@ def delete_question(bank_id, question_id):
 
 @question_bp.route("/<int:question_id>/answer", methods=["POST"])
 @token_required
-def submit_answer(bank_id, question_id):
+def submit_answer(question_id):
     """Submit an answer for evaluation.
     ---
     tags:
@@ -268,10 +244,6 @@ def submit_answer(bank_id, question_id):
     security:
       - Bearer: []
     parameters:
-      - name: bank_id
-        in: path
-        type: integer
-        required: true
       - name: question_id
         in: path
         type: integer
@@ -289,7 +261,7 @@ def submit_answer(bank_id, question_id):
       200:
         description: Evaluation result
     """
-    q = Question.query.filter_by(id=question_id, question_bank_id=bank_id).first_or_404()
+    q = Question.query.get_or_404(question_id)
     try:
         data = AnswerSubmit(**request.get_json())
     except ValidationError as e:
@@ -309,7 +281,7 @@ def submit_answer(bank_id, question_id):
 
 @question_bp.route("/<int:question_id>/hint", methods=["GET"])
 @token_required
-def get_hint(bank_id, question_id):
+def get_hint(question_id):
     """Get a hint for a question.
     ---
     tags:
@@ -317,10 +289,6 @@ def get_hint(bank_id, question_id):
     security:
       - Bearer: []
     parameters:
-      - name: bank_id
-        in: path
-        type: integer
-        required: true
       - name: question_id
         in: path
         type: integer
@@ -329,16 +297,14 @@ def get_hint(bank_id, question_id):
       200:
         description: Hint for the question
     """
-    q = Question.query.filter_by(id=question_id, question_bank_id=bank_id).first_or_404()
+    q = Question.query.get_or_404(question_id)
 
-    # Track hint usage
     q.times_hint_used += 1
     db.session.commit()
 
     hint_data = {"hint": q.hint}
 
     if q.category == QuestionCategory.MultipleChoice and q.options:
-        # Remove one incorrect option
         try:
             options = json.loads(q.options)
             correct = q.correct_answer.strip()
@@ -350,9 +316,7 @@ def get_hint(bank_id, question_id):
                 hint_data["hint"] = f"One wrong answer removed. Remaining options: {remaining}"
         except json.JSONDecodeError:
             pass
-
     elif q.category == QuestionCategory.Coding:
-        # Show sample input/output as hint
         hint_data["sample_input"] = q.code_sample_input
         hint_data["sample_output"] = q.code_sample_output
 
@@ -361,29 +325,20 @@ def get_hint(bank_id, question_id):
 
 @question_bp.route("/export", methods=["GET"])
 @token_required
-def export_questions(bank_id):
-    """Export all questions from a bank as JSON.
+def export_questions():
+    """Export all questions as JSON.
     ---
     tags:
       - Questions
     security:
       - Bearer: []
-    parameters:
-      - name: bank_id
-        in: path
-        type: integer
-        required: true
     responses:
       200:
         description: Exported questions
     """
-    bank = QuestionBank.query.get_or_404(bank_id)
-    questions = Question.query.filter_by(question_bank_id=bank_id).order_by(Question.question_number).all()
+    questions = Question.query.order_by(Question.question_number).all()
 
-    export_data = {
-        "bank_name": bank.name,
-        "questions": []
-    }
+    export_data = {"questions": []}
     for q in questions:
         qdata = {
             "question_number": q.question_number,
@@ -410,18 +365,14 @@ def export_questions(bank_id):
 
 @question_bp.route("/import", methods=["POST"])
 @token_required
-def import_questions(bank_id):
-    """Import questions into a bank from JSON.
+def import_questions():
+    """Import questions from JSON.
     ---
     tags:
       - Questions
     security:
       - Bearer: []
     parameters:
-      - name: bank_id
-        in: path
-        type: integer
-        required: true
       - name: body
         in: body
         schema:
@@ -435,7 +386,6 @@ def import_questions(bank_id):
       201:
         description: Questions imported
     """
-    QuestionBank.query.get_or_404(bank_id)
     try:
         data = QuestionImport(**request.get_json())
     except ValidationError as e:
@@ -444,8 +394,7 @@ def import_questions(bank_id):
     imported = []
     for qdata in data.questions:
         q = Question(
-            question_bank_id=bank_id,
-            question_number=_next_question_number(bank_id),
+            question_number=_next_question_number(),
             category=QuestionCategory(qdata.category),
             difficulty=QuestionDifficulty(qdata.difficulty),
             description=qdata.description,
