@@ -36,6 +36,7 @@ def _serialize_question(q):
         except json.JSONDecodeError:
             data["options"] = []
     if q.category == QuestionCategory.Coding:
+        data["code_programming_language"] = q.code_programming_language
         data["code_sample_input"] = q.code_sample_input
         data["code_sample_output"] = q.code_sample_output
         data["code_hidden_input"] = q.code_hidden_input
@@ -52,24 +53,119 @@ def _next_question_number():
 @question_bp.route("", methods=["GET"])
 @token_required
 def list_questions():
-    """List all questions.
+    """List all questions. Supports optional filtering by programming language and difficulty.
     ---
     tags:
       - Questions
     security:
       - Bearer: []
+    parameters:
+      - name: language
+        in: query
+        type: string
+        required: false
+        description: Filter by programming language (e.g. Python, Java)
+      - name: difficulty
+        in: query
+        type: string
+        required: false
+        enum: [Easy, Moderate, Hard]
+        description: Filter by difficulty level
     responses:
       200:
-        description: List of all questions
+        description: List of questions, optionally filtered
+        schema:
+          type: array
+          items:
+            $ref: '#/definitions/Question'
+    definitions:
+      Question:
+        type: object
+        properties:
+          id:
+            type: integer
+          question_number:
+            type: integer
+            description: Globally unique sequential question number
+          category:
+            type: string
+            enum: [Coding, General, MultipleChoice]
+          difficulty:
+            type: string
+            enum: [Easy, Moderate, Hard]
+          description:
+            type: string
+          correct_answer:
+            type: string
+          hint:
+            type: string
+          question_banks:
+            type: array
+            description: Banks this question is assigned to
+            items:
+              type: object
+              properties:
+                id:
+                  type: integer
+                name:
+                  type: string
+          options:
+            type: array
+            items:
+              type: string
+            description: Multiple choice options (only for MultipleChoice category)
+          code_programming_language:
+            type: string
+            description: Programming language (only for Coding category)
+          code_sample_input:
+            type: string
+            description: Sample input (only for Coding category)
+          code_sample_output:
+            type: string
+            description: Expected sample output (only for Coding category)
+          code_hidden_input:
+            type: string
+            description: Hidden test input (only for Coding category)
+          code_hidden_output:
+            type: string
+            description: Expected hidden test output (only for Coding category)
+          times_passed:
+            type: integer
+          times_hint_used:
+            type: integer
+          times_incorrect:
+            type: integer
+          times_correct:
+            type: integer
+          created_at:
+            type: string
+            format: date-time
+          updated_at:
+            type: string
+            format: date-time
     """
-    questions = Question.query.order_by(Question.question_number).all()
+    query = Question.query
+
+    language = request.args.get("language")
+    if language:
+        query = query.filter(Question.code_programming_language.ilike(language))
+
+    difficulty = request.args.get("difficulty")
+    if difficulty:
+        try:
+            diff_enum = QuestionDifficulty(difficulty)
+            query = query.filter(Question.difficulty == diff_enum)
+        except ValueError:
+            pass
+
+    questions = query.order_by(Question.question_number).all()
     return jsonify([_serialize_question(q) for q in questions])
 
 
 @question_bp.route("", methods=["POST"])
 @token_required
 def create_question():
-    """Create a new question (not assigned to any bank yet).
+    """Create a new standalone question. The question is not assigned to any bank. Use the bank assignment endpoint to add it to banks.
     ---
     tags:
       - Questions
@@ -78,6 +174,7 @@ def create_question():
     parameters:
       - name: body
         in: body
+        required: true
         schema:
           type: object
           required:
@@ -85,6 +182,119 @@ def create_question():
             - difficulty
             - description
             - correct_answer
+          properties:
+            category:
+              type: string
+              enum: [Coding, General, MultipleChoice]
+            difficulty:
+              type: string
+              enum: [Easy, Moderate, Hard]
+            description:
+              type: string
+              description: The question text/prompt
+            correct_answer:
+              type: string
+            hint:
+              type: string
+            options:
+              type: array
+              items:
+                type: string
+              description: Required for MultipleChoice questions
+            code_programming_language:
+              type: string
+              description: Programming language for Coding questions
+            code_sample_input:
+              type: string
+              description: Sample input for Coding questions
+            code_sample_output:
+              type: string
+              description: Expected output for sample input
+            code_hidden_input:
+              type: string
+              description: Hidden test input for Coding questions
+            code_hidden_output:
+              type: string
+              description: Expected output for hidden test input
+    responses:
+      201:
+        description: Question created
+        schema:
+          $ref: '#/definitions/Question'
+      400:
+        description: Validation error
+    """
+    try:
+        data = QuestionCreate(**request.get_json())
+    except ValidationError as e:
+        return jsonify({"error": e.errors()}), 400
+
+    q = Question(
+        question_number=_next_question_number(),
+        category=QuestionCategory(data.category),
+        difficulty=QuestionDifficulty(data.difficulty),
+        description=data.description,
+        correct_answer=data.correct_answer,
+        hint=data.hint,
+        options=json.dumps(data.options) if data.options else None,
+        code_programming_language=data.code_programming_language,
+        code_sample_input=data.code_sample_input,
+        code_sample_output=data.code_sample_output,
+        code_hidden_input=data.code_hidden_input,
+        code_hidden_output=data.code_hidden_output,
+    )
+    db.session.add(q)
+    db.session.commit()
+    return jsonify(_serialize_question(q)), 201
+
+
+@question_bp.route("/<int:question_id>", methods=["GET"])
+@token_required
+def get_question(question_id):
+    """Get a question by ID. Response includes the list of banks this question belongs to.
+    ---
+    tags:
+      - Questions
+    security:
+      - Bearer: []
+    parameters:
+      - name: question_id
+        in: path
+        type: integer
+        required: true
+        description: Question ID
+    responses:
+      200:
+        description: Question details
+        schema:
+          $ref: '#/definitions/Question'
+      404:
+        description: Question not found
+    """
+    q = Question.query.get_or_404(question_id)
+    return jsonify(_serialize_question(q))
+
+
+@question_bp.route("/<int:question_id>", methods=["PUT"])
+@token_required
+def update_question(question_id):
+    """Update a question. Only provided fields are updated.
+    ---
+    tags:
+      - Questions
+    security:
+      - Bearer: []
+    parameters:
+      - name: question_id
+        in: path
+        type: integer
+        required: true
+        description: Question ID
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
           properties:
             category:
               type: string
@@ -102,6 +312,8 @@ def create_question():
               type: array
               items:
                 type: string
+            code_programming_language:
+              type: string
             code_sample_input:
               type: string
             code_sample_output:
@@ -111,71 +323,14 @@ def create_question():
             code_hidden_output:
               type: string
     responses:
-      201:
-        description: Question created
-    """
-    try:
-        data = QuestionCreate(**request.get_json())
-    except ValidationError as e:
-        return jsonify({"error": e.errors()}), 400
-
-    q = Question(
-        question_number=_next_question_number(),
-        category=QuestionCategory(data.category),
-        difficulty=QuestionDifficulty(data.difficulty),
-        description=data.description,
-        correct_answer=data.correct_answer,
-        hint=data.hint,
-        options=json.dumps(data.options) if data.options else None,
-        code_sample_input=data.code_sample_input,
-        code_sample_output=data.code_sample_output,
-        code_hidden_input=data.code_hidden_input,
-        code_hidden_output=data.code_hidden_output,
-    )
-    db.session.add(q)
-    db.session.commit()
-    return jsonify(_serialize_question(q)), 201
-
-
-@question_bp.route("/<int:question_id>", methods=["GET"])
-@token_required
-def get_question(question_id):
-    """Get a question by ID.
-    ---
-    tags:
-      - Questions
-    security:
-      - Bearer: []
-    parameters:
-      - name: question_id
-        in: path
-        type: integer
-        required: true
-    responses:
-      200:
-        description: Question details
-    """
-    q = Question.query.get_or_404(question_id)
-    return jsonify(_serialize_question(q))
-
-
-@question_bp.route("/<int:question_id>", methods=["PUT"])
-@token_required
-def update_question(question_id):
-    """Update a question.
-    ---
-    tags:
-      - Questions
-    security:
-      - Bearer: []
-    parameters:
-      - name: question_id
-        in: path
-        type: integer
-        required: true
-    responses:
       200:
         description: Question updated
+        schema:
+          $ref: '#/definitions/Question'
+      400:
+        description: Validation error
+      404:
+        description: Question not found
     """
     q = Question.query.get_or_404(question_id)
     try:
@@ -195,6 +350,8 @@ def update_question(question_id):
         q.hint = data.hint
     if data.options is not None:
         q.options = json.dumps(data.options)
+    if data.code_programming_language is not None:
+        q.code_programming_language = data.code_programming_language
     if data.code_sample_input is not None:
         q.code_sample_input = data.code_sample_input
     if data.code_sample_output is not None:
@@ -211,7 +368,7 @@ def update_question(question_id):
 @question_bp.route("/<int:question_id>", methods=["DELETE"])
 @token_required
 def delete_question(question_id):
-    """Delete a question (removes from all banks too).
+    """Delete a question. This also removes it from all banks it was assigned to.
     ---
     tags:
       - Questions
@@ -222,9 +379,18 @@ def delete_question(question_id):
         in: path
         type: integer
         required: true
+        description: Question ID
     responses:
       200:
         description: Question deleted
+        schema:
+          type: object
+          properties:
+            message:
+              type: string
+              example: Deleted
+      404:
+        description: Question not found
     """
     q = Question.query.get_or_404(question_id)
     db.session.delete(q)
@@ -237,7 +403,7 @@ def delete_question(question_id):
 @question_bp.route("/<int:question_id>/answer", methods=["POST"])
 @token_required
 def submit_answer(question_id):
-    """Submit an answer for evaluation.
+    """Submit an answer for evaluation. The evaluation strategy depends on the question category (MultipleChoice, General, or Coding).
     ---
     tags:
       - Questions
@@ -248,8 +414,10 @@ def submit_answer(question_id):
         in: path
         type: integer
         required: true
+        description: Question ID
       - name: body
         in: body
+        required: true
         schema:
           type: object
           required:
@@ -257,9 +425,21 @@ def submit_answer(question_id):
           properties:
             answer:
               type: string
+              description: The player's answer
     responses:
       200:
         description: Evaluation result
+        schema:
+          type: object
+          properties:
+            correct:
+              type: boolean
+            message:
+              type: string
+      400:
+        description: Validation error or unknown question category
+      404:
+        description: Question not found
     """
     q = Question.query.get_or_404(question_id)
     try:
@@ -282,7 +462,7 @@ def submit_answer(question_id):
 @question_bp.route("/<int:question_id>/hint", methods=["GET"])
 @token_required
 def get_hint(question_id):
-    """Get a hint for a question.
+    """Get a hint for a question. Increments the times_hint_used counter. For MultipleChoice questions, also removes one incorrect option. For Coding questions, includes sample input/output.
     ---
     tags:
       - Questions
@@ -293,9 +473,28 @@ def get_hint(question_id):
         in: path
         type: integer
         required: true
+        description: Question ID
     responses:
       200:
         description: Hint for the question
+        schema:
+          type: object
+          properties:
+            hint:
+              type: string
+            reduced_options:
+              type: array
+              items:
+                type: string
+              description: Remaining options after removing one wrong answer (MultipleChoice only)
+            sample_input:
+              type: string
+              description: Sample input (Coding only)
+            sample_output:
+              type: string
+              description: Sample output (Coding only)
+      404:
+        description: Question not found
     """
     q = Question.query.get_or_404(question_id)
 
@@ -326,7 +525,7 @@ def get_hint(question_id):
 @question_bp.route("/export", methods=["GET"])
 @token_required
 def export_questions():
-    """Export all questions as JSON.
+    """Export all questions as JSON. Returns all questions regardless of bank assignment.
     ---
     tags:
       - Questions
@@ -335,6 +534,38 @@ def export_questions():
     responses:
       200:
         description: Exported questions
+        schema:
+          type: object
+          properties:
+            questions:
+              type: array
+              items:
+                type: object
+                properties:
+                  question_number:
+                    type: integer
+                  category:
+                    type: string
+                  difficulty:
+                    type: string
+                  description:
+                    type: string
+                  correct_answer:
+                    type: string
+                  hint:
+                    type: string
+                  options:
+                    type: array
+                    items:
+                      type: string
+                  code_sample_input:
+                    type: string
+                  code_sample_output:
+                    type: string
+                  code_hidden_input:
+                    type: string
+                  code_hidden_output:
+                    type: string
     """
     questions = Question.query.order_by(Question.question_number).all()
 
@@ -354,6 +585,7 @@ def export_questions():
             except json.JSONDecodeError:
                 qdata["options"] = []
         if q.category == QuestionCategory.Coding:
+            qdata["code_programming_language"] = q.code_programming_language
             qdata["code_sample_input"] = q.code_sample_input
             qdata["code_sample_output"] = q.code_sample_output
             qdata["code_hidden_input"] = q.code_hidden_input
@@ -366,7 +598,7 @@ def export_questions():
 @question_bp.route("/import", methods=["POST"])
 @token_required
 def import_questions():
-    """Import questions from JSON.
+    """Import questions from JSON. Creates standalone questions that are not assigned to any bank. Use the bank assignment endpoint to add them to banks after import.
     ---
     tags:
       - Questions
@@ -375,6 +607,7 @@ def import_questions():
     parameters:
       - name: body
         in: body
+        required: true
         schema:
           type: object
           required:
@@ -382,9 +615,55 @@ def import_questions():
           properties:
             questions:
               type: array
+              items:
+                type: object
+                required:
+                  - category
+                  - difficulty
+                  - description
+                  - correct_answer
+                properties:
+                  category:
+                    type: string
+                    enum: [Coding, General, MultipleChoice]
+                  difficulty:
+                    type: string
+                    enum: [Easy, Moderate, Hard]
+                  description:
+                    type: string
+                  correct_answer:
+                    type: string
+                  hint:
+                    type: string
+                  options:
+                    type: array
+                    items:
+                      type: string
+                  code_programming_language:
+                    type: string
+                  code_sample_input:
+                    type: string
+                  code_sample_output:
+                    type: string
+                  code_hidden_input:
+                    type: string
+                  code_hidden_output:
+                    type: string
     responses:
       201:
         description: Questions imported
+        schema:
+          type: object
+          properties:
+            imported:
+              type: integer
+              description: Number of questions imported
+            questions:
+              type: array
+              items:
+                $ref: '#/definitions/Question'
+      400:
+        description: Validation error
     """
     try:
         data = QuestionImport(**request.get_json())
@@ -401,6 +680,7 @@ def import_questions():
             correct_answer=qdata.correct_answer,
             hint=qdata.hint,
             options=json.dumps(qdata.options) if qdata.options else None,
+            code_programming_language=qdata.code_programming_language,
             code_sample_input=qdata.code_sample_input,
             code_sample_output=qdata.code_sample_output,
             code_hidden_input=qdata.code_hidden_input,

@@ -1,13 +1,14 @@
-"""Question evaluation services using Strands Agents and AgentCore Code Interpreter."""
+"""Question evaluation services using Strands Agents for general knowledge and container sandbox for coding."""
 import json
 import logging
 import os
 
-from strands import Agent, tool
+from strands import Agent
 from strands.models import BedrockModel
 
 from src.extensions import db
 from src.models.models import GlobalConfig
+from src.services.sandbox.runner import run_code
 
 logger = logging.getLogger(__name__)
 
@@ -139,32 +140,24 @@ Evaluate the player's answer. Return ONLY a JSON object with "confidence" (0-100
 
 
 def evaluate_coding(question, player_code):
-    """Evaluate coding answer using AgentCore Code Interpreter sandbox."""
+    """Evaluate coding answer using container-based sandbox execution."""
     # Check auto-pass
     if _get_config_flag(GlobalConfig.AUTO_PASS_ALL):
         return {"correct": True, "grade": "Correct", "message": "Auto-pass enabled.", "hint_passed": True, "hidden_passed": True}
 
-    region = os.environ.get("AWS_REGION", "eu-west-1")
+    language = (question.code_programming_language or "python").lower().strip()
 
     try:
-        from bedrock_agentcore.tools.code_interpreter_client import CodeInterpreter
-
-        code_client = CodeInterpreter(region)
-        code_client.start()
-
         hint_passed = False
         hidden_passed = False
 
-        try:
-            # Test with hint input/output
-            if question.code_sample_input and question.code_sample_output:
-                hint_passed = _run_code_test(code_client, player_code, question.code_sample_input, question.code_sample_output)
+        # Test with sample input/output
+        if question.code_sample_input and question.code_sample_output:
+            hint_passed = _run_sandbox_test(language, player_code, question.code_sample_input, question.code_sample_output)
 
-            # Test with hidden input/output
-            if question.code_hidden_input and question.code_hidden_output:
-                hidden_passed = _run_code_test(code_client, player_code, question.code_hidden_input, question.code_hidden_output)
-        finally:
-            code_client.stop()
+        # Test with hidden input/output
+        if question.code_hidden_input and question.code_hidden_output:
+            hidden_passed = _run_sandbox_test(language, player_code, question.code_hidden_input, question.code_hidden_output)
 
         is_correct = hint_passed and hidden_passed
 
@@ -193,56 +186,66 @@ def evaluate_coding(question, player_code):
         return {"correct": False, "grade": "Error", "message": f"Sandbox error: {str(e)}", "hint_passed": False, "hidden_passed": False}
 
 
-def _run_code_test(code_client, player_code, test_input, expected_output):
-    """Run player code in sandbox with given input and check against expected output."""
-    # Build the execution code: set up inputs, run player code, capture result
-    exec_code = f"""
-import json
+def _run_sandbox_test(language, player_code, test_input, expected_output):
+    """Run player code in a sandboxed container and compare output."""
+    # Wrap the player code with input injection based on language
+    wrapped_code = _wrap_code(language, player_code, test_input)
 
-# Set up input variables
+    result = run_code(language, wrapped_code)
+
+    if not result["success"]:
+        logger.debug(f"Sandbox execution failed: {result['stderr']}")
+        return False
+
+    actual = result["stdout"].strip()
+    expected = expected_output.strip()
+    return _normalize_compare(actual, expected)
+
+
+def _wrap_code(language, player_code, test_input):
+    """Wrap player code with input injection for the target language."""
+    if language in ("python",):
+        return f"""import json
+
 inputs = {test_input}
 for k, v in inputs.items():
     globals()[k] = v
 
-# Player code
 {player_code}
 
-# Output the result
-print("RESULT:" + str(result))
+print(result)
 """
-    try:
-        response = code_client.invoke("executeCode", {
-            "language": "python",
-            "code": exec_code,
-        })
+    elif language in ("java",):
+        return f"""import java.util.*;
 
-        # Extract output from stream
-        output_text = ""
-        for event in response.get("stream", []):
-            result_data = event.get("result", {})
-            for content in result_data.get("content", []):
-                if content.get("type") == "text":
-                    output_text += content.get("text", "")
+public class Solution {{
+    {player_code}
 
-        # Check if result matches expected output
-        if "RESULT:" in output_text:
-            actual = output_text.split("RESULT:")[-1].strip()
-            expected = expected_output.strip()
-            return _normalize_compare(actual, expected)
+    public static void main(String[] args) {{
+        String input = {json.dumps(test_input)};
+        System.out.println(solve(input));
+    }}
+}}
+"""
+    elif language in ("typescript",):
+        return f"""const inputs = {test_input};
+Object.assign(globalThis, inputs);
 
-        return False
-    except Exception as e:
-        logger.error(f"Code test execution failed: {e}")
-        return False
+{player_code}
+
+console.log(result);
+"""
+    else:
+        return player_code
 
 
 def _normalize_compare(actual, expected):
     """Normalize and compare code outputs (handles set ordering, whitespace, etc.)."""
+    import ast
+
     def normalize(s):
         s = s.strip().replace(" ", "")
-        # Try to evaluate as Python literal for set/list comparison
         try:
-            import ast
             val = ast.literal_eval(s)
             if isinstance(val, set):
                 return frozenset(val)

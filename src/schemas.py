@@ -71,3 +71,37 @@ class QuestionImport(BaseModel):
 
 class BankAssignQuestions(BaseModel):
     question_ids: list[int]
+
+
+class EventCreate(BaseModel):
+    name: str
+    theme: str
+    question_bank_id: int
+    custom_welcome_text: Optional[str] = None
+
+
+class EventUpdate(BaseModel):
+    name: Optional[str] = None
+    theme: Optional[str] = None
+    question_bank_id: Optional[int] = None
+    custom_welcome_text: Optional[str] = None
+
+
+class PlayerCreate(BaseModel):
+    name: str
+    avatar: str
+    preferred_coding_language: str
+    difficulty: str
+
+    @field_validator("difficulty")
+    @classmethod
+    def validate_difficulty(cls, v):
+        allowed = {"Easy", "Moderate", "Hard"}
+        if v not in allowed:
+            raise ValueError(f"difficulty must be one of {allowed}")
+        return v
+
+
+class GameEnd(BaseModel):
+    score: int
+    time_taken_seconds: int

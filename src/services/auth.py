@@ -45,6 +45,9 @@ def token_required(f):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
+        elif auth_header:
+            # Accept raw token without "Bearer " prefix (e.g. from Swagger UI apiKey input)
+            token = auth_header
 
         if not token:
             return jsonify({"error": "Token is missing"}), 401

@@ -1,0 +1,460 @@
+"""Game flow routes — player-facing APIs for the game lifecycle."""
+import random
+from datetime import datetime, timezone
+
+from flask import Blueprint, jsonify, request
+from pydantic import ValidationError
+
+from src.extensions import db
+from src.models.models import Event, Game, GamePlayer, GameQuestion, Player, QuestionDifficulty
+from src.schemas import GameEnd, PlayerCreate
+
+game_bp = Blueprint("games", __name__, url_prefix="/api/game")
+
+GAME_QUESTION_COUNT = 32
+
+
+def _serialize_player(player):
+    return {
+        "id": player.id,
+        "name": player.name,
+        "avatar": player.avatar,
+        "preferred_coding_language": player.preferred_coding_language,
+        "difficulty": player.difficulty.value,
+        "created_at": player.created_at.isoformat(),
+    }
+
+
+def _serialize_game_player(gp):
+    return {
+        "game_id": gp.game_id,
+        "player_id": gp.player_id,
+        "score": gp.score,
+        "time_taken_seconds": gp.time_taken_seconds,
+        "completed_at": gp.completed_at.isoformat() if gp.completed_at else None,
+        "joined_at": gp.joined_at.isoformat(),
+    }
+
+
+# --- Join event via access code ---
+
+@game_bp.route("/join", methods=["POST"])
+def join_event():
+    """Join an event using its access code. Returns the event details and welcome text.
+    ---
+    tags:
+      - Game Flow
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - access_code
+          properties:
+            access_code:
+              type: string
+              description: 8-character event access code (case-sensitive)
+    responses:
+      200:
+        description: Event details for the player
+        schema:
+          type: object
+          properties:
+            event_id:
+              type: integer
+            event_name:
+              type: string
+            theme:
+              type: string
+            custom_welcome_text:
+              type: string
+            question_bank_name:
+              type: string
+      404:
+        description: Invalid access code
+    """
+    body = request.get_json() or {}
+    access_code = body.get("access_code", "").strip()
+    if not access_code:
+        return jsonify({"error": "access_code is required"}), 400
+
+    event = Event.query.filter_by(access_code=access_code).first()
+    if not event:
+        return jsonify({"error": "Invalid access code"}), 404
+
+    return jsonify({
+        "event_id": event.id,
+        "event_name": event.name,
+        "theme": event.theme,
+        "custom_welcome_text": event.custom_welcome_text,
+        "question_bank_name": event.question_bank.name if event.question_bank else None,
+    })
+
+
+# --- Create player profile ---
+
+@game_bp.route("/players", methods=["POST"])
+def create_player():
+    """Create a new player profile.
+    ---
+    tags:
+      - Game Flow
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - name
+            - avatar
+            - preferred_coding_language
+            - difficulty
+          properties:
+            name:
+              type: string
+            avatar:
+              type: string
+              description: Chosen avatar identifier
+            preferred_coding_language:
+              type: string
+              description: Preferred programming language
+            difficulty:
+              type: string
+              enum: [Easy, Moderate, Hard]
+    responses:
+      201:
+        description: Player profile created
+        schema:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+            avatar:
+              type: string
+            preferred_coding_language:
+              type: string
+            difficulty:
+              type: string
+            created_at:
+              type: string
+              format: date-time
+      400:
+        description: Validation error
+    """
+    try:
+        data = PlayerCreate(**request.get_json())
+    except ValidationError as e:
+        return jsonify({"error": e.errors()}), 400
+
+    player = Player(
+        name=data.name,
+        avatar=data.avatar,
+        preferred_coding_language=data.preferred_coding_language,
+        difficulty=QuestionDifficulty(data.difficulty),
+    )
+    db.session.add(player)
+    db.session.commit()
+    return jsonify(_serialize_player(player)), 201
+
+
+# --- Start a new game ---
+
+@game_bp.route("/start", methods=["POST"])
+def start_game():
+    """Start a new game for a player within an event. Selects questions from the event's question bank and creates a GamePlayer entry with score 0.
+    ---
+    tags:
+      - Game Flow
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - event_id
+            - player_id
+          properties:
+            event_id:
+              type: integer
+              description: The event to play in
+            player_id:
+              type: integer
+              description: The player starting the game
+    responses:
+      201:
+        description: Game started
+        schema:
+          type: object
+          properties:
+            game_id:
+              type: integer
+            event_id:
+              type: integer
+            player_id:
+              type: integer
+            question_count:
+              type: integer
+              description: Number of questions selected for this game
+            questions:
+              type: array
+              description: Ordered list of question IDs for this game
+              items:
+                type: object
+                properties:
+                  question_id:
+                    type: integer
+                  question_order:
+                    type: integer
+      400:
+        description: Validation error or no questions in bank
+      404:
+        description: Event or player not found
+    """
+    body = request.get_json() or {}
+    event_id = body.get("event_id")
+    player_id = body.get("player_id")
+
+    if not event_id or not player_id:
+        return jsonify({"error": "event_id and player_id are required"}), 400
+
+    event = Event.query.get(event_id)
+    if not event:
+        return jsonify({"error": "Event not found"}), 404
+
+    player = Player.query.get(player_id)
+    if not player:
+        return jsonify({"error": "Player not found"}), 404
+
+    bank = event.question_bank
+    if not bank or not bank.questions:
+        return jsonify({"error": "No questions available in the event's question bank"}), 400
+
+    # Select up to GAME_QUESTION_COUNT questions, randomised
+    available = list(bank.questions)
+    selected = random.sample(available, min(len(available), GAME_QUESTION_COUNT))
+
+    # Create the game
+    game = Game(event_id=event.id, question_bank_id=bank.id)
+    db.session.add(game)
+    db.session.flush()
+
+    # Assign questions in order
+    for order, q in enumerate(selected, start=1):
+        gq = GameQuestion(game_id=game.id, question_id=q.id, question_order=order)
+        db.session.add(gq)
+
+    # Add player to game with score 0
+    gp = GamePlayer(game_id=game.id, player_id=player.id, score=0)
+    db.session.add(gp)
+    db.session.commit()
+
+    return jsonify({
+        "game_id": game.id,
+        "event_id": event.id,
+        "player_id": player.id,
+        "question_count": len(selected),
+        "questions": [
+            {"question_id": gq.question_id, "question_order": gq.question_order}
+            for gq in game.game_questions
+        ],
+    }), 201
+
+
+# --- End a game ---
+
+@game_bp.route("/<int:game_id>/end", methods=["POST"])
+def end_game(game_id):
+    """End a game for a player. Captures the final score and time taken.
+    ---
+    tags:
+      - Game Flow
+    parameters:
+      - name: game_id
+        in: path
+        type: integer
+        required: true
+        description: Game ID
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - player_id
+            - score
+            - time_taken_seconds
+          properties:
+            player_id:
+              type: integer
+              description: The player ending the game
+            score:
+              type: integer
+              description: Final score
+            time_taken_seconds:
+              type: integer
+              description: Total time taken in seconds
+    responses:
+      200:
+        description: Game ended, score recorded
+        schema:
+          type: object
+          properties:
+            game_id:
+              type: integer
+            player_id:
+              type: integer
+            score:
+              type: integer
+            time_taken_seconds:
+              type: integer
+            completed_at:
+              type: string
+              format: date-time
+      404:
+        description: Game or player not found in this game
+    """
+    body = request.get_json() or {}
+    player_id = body.get("player_id")
+
+    if not player_id:
+        return jsonify({"error": "player_id is required"}), 400
+
+    try:
+        data = GameEnd(**{k: v for k, v in body.items() if k in ("score", "time_taken_seconds")})
+    except ValidationError as e:
+        return jsonify({"error": e.errors()}), 400
+
+    game = Game.query.get(game_id)
+    if not game:
+        return jsonify({"error": "Game not found"}), 404
+
+    gp = GamePlayer.query.filter_by(game_id=game_id, player_id=player_id).first()
+    if not gp:
+        return jsonify({"error": "Player not found in this game"}), 404
+
+    if gp.completed_at:
+        return jsonify({"error": "Game already ended for this player"}), 409
+
+    gp.score = data.score
+    gp.time_taken_seconds = data.time_taken_seconds
+    gp.completed_at = datetime.now(timezone.utc)
+    db.session.commit()
+
+    return jsonify({
+        "game_id": game_id,
+        "player_id": player_id,
+        "score": gp.score,
+        "time_taken_seconds": gp.time_taken_seconds,
+        "completed_at": gp.completed_at.isoformat(),
+    })
+
+
+
+# --- Player GET APIs ---
+
+@game_bp.route("/players/<int:player_id>", methods=["GET"])
+def get_player(player_id):
+    """Get a player profile by ID.
+    ---
+    tags:
+      - Game Flow
+    parameters:
+      - name: player_id
+        in: path
+        type: integer
+        required: true
+        description: Player ID
+    responses:
+      200:
+        description: Player profile
+        schema:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+            avatar:
+              type: string
+            preferred_coding_language:
+              type: string
+            difficulty:
+              type: string
+              enum: [Easy, Moderate, Hard]
+            created_at:
+              type: string
+              format: date-time
+      404:
+        description: Player not found
+    """
+    player = Player.query.get_or_404(player_id)
+    return jsonify(_serialize_player(player))
+
+
+@game_bp.route("/players/<int:player_id>/events", methods=["GET"])
+def get_player_events(player_id):
+    """Get all events a player has participated in, with their game results.
+    ---
+    tags:
+      - Game Flow
+    parameters:
+      - name: player_id
+        in: path
+        type: integer
+        required: true
+        description: Player ID
+    responses:
+      200:
+        description: List of events the player has participated in
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              event_id:
+                type: integer
+              event_name:
+                type: string
+              theme:
+                type: string
+              game_id:
+                type: integer
+              score:
+                type: integer
+              time_taken_seconds:
+                type: integer
+              completed_at:
+                type: string
+                format: date-time
+              joined_at:
+                type: string
+                format: date-time
+      404:
+        description: Player not found
+    """
+    player = Player.query.get_or_404(player_id)
+    game_players = GamePlayer.query.filter_by(player_id=player.id).all()
+
+    results = []
+    for gp in game_players:
+        game = Game.query.get(gp.game_id)
+        event = Event.query.get(game.event_id) if game else None
+        if event:
+            results.append({
+                "event_id": event.id,
+                "event_name": event.name,
+                "theme": event.theme,
+                "game_id": gp.game_id,
+                "score": gp.score,
+                "time_taken_seconds": gp.time_taken_seconds,
+                "completed_at": gp.completed_at.isoformat() if gp.completed_at else None,
+                "joined_at": gp.joined_at.isoformat(),
+            })
+
+    return jsonify(results)

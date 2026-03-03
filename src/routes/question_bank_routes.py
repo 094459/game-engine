@@ -34,6 +34,23 @@ def list_banks():
     responses:
       200:
         description: List of question banks
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+              question_count:
+                type: integer
+              created_at:
+                type: string
+                format: date-time
+              updated_at:
+                type: string
+                format: date-time
     """
     banks = QuestionBank.query.all()
     return jsonify([_serialize_bank(b) for b in banks])
@@ -51,6 +68,7 @@ def create_bank():
     parameters:
       - name: body
         in: body
+        required: true
         schema:
           type: object
           required:
@@ -58,9 +76,29 @@ def create_bank():
           properties:
             name:
               type: string
+              description: Unique name for the question bank
     responses:
       201:
         description: Question bank created
+        schema:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+            question_count:
+              type: integer
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+      400:
+        description: Validation error
+      409:
+        description: A bank with this name already exists
     """
     try:
         data = QuestionBankCreate(**request.get_json())
@@ -90,9 +128,27 @@ def get_bank(bank_id):
         in: path
         type: integer
         required: true
+        description: Question bank ID
     responses:
       200:
         description: Question bank details
+        schema:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+            question_count:
+              type: integer
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+      404:
+        description: Question bank not found
     """
     bank = QuestionBank.query.get_or_404(bank_id)
     return jsonify(_serialize_bank(bank))
@@ -112,16 +168,38 @@ def update_bank(bank_id):
         in: path
         type: integer
         required: true
+        description: Question bank ID
       - name: body
         in: body
+        required: true
         schema:
           type: object
           properties:
             name:
               type: string
+              description: New name for the question bank
     responses:
       200:
         description: Question bank updated
+        schema:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+            question_count:
+              type: integer
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+      400:
+        description: Validation error
+      404:
+        description: Question bank not found
     """
     bank = QuestionBank.query.get_or_404(bank_id)
     try:
@@ -138,7 +216,7 @@ def update_bank(bank_id):
 @bank_bp.route("/<int:bank_id>", methods=["DELETE"])
 @token_required
 def delete_bank(bank_id):
-    """Delete a question bank (does not delete the questions themselves).
+    """Delete a question bank. Does not delete the questions themselves, only the bank and its associations.
     ---
     tags:
       - Question Banks
@@ -149,9 +227,18 @@ def delete_bank(bank_id):
         in: path
         type: integer
         required: true
+        description: Question bank ID
     responses:
       200:
         description: Question bank deleted
+        schema:
+          type: object
+          properties:
+            message:
+              type: string
+              example: Deleted
+      404:
+        description: Question bank not found
     """
     bank = QuestionBank.query.get_or_404(bank_id)
     db.session.delete(bank)
@@ -164,10 +251,10 @@ def delete_bank(bank_id):
 @bank_bp.route("/<int:bank_id>/questions", methods=["GET"])
 @token_required
 def list_bank_questions(bank_id):
-    """List all questions assigned to a bank.
+    """List all questions assigned to a bank. Supports optional filtering by programming language and difficulty.
     ---
     tags:
-      - Question Banks
+      - Bank Questions
     security:
       - Bearer: []
     parameters:
@@ -175,21 +262,50 @@ def list_bank_questions(bank_id):
         in: path
         type: integer
         required: true
+        description: Question bank ID
+      - name: language
+        in: query
+        type: string
+        required: false
+        description: Filter by programming language (e.g. Python, Java)
+      - name: difficulty
+        in: query
+        type: string
+        required: false
+        enum: [Easy, Moderate, Hard]
+        description: Filter by difficulty level
     responses:
       200:
-        description: List of questions in this bank
+        description: List of questions assigned to this bank, optionally filtered
+        schema:
+          type: array
+          items:
+            $ref: '#/definitions/Question'
+      404:
+        description: Question bank not found
     """
     bank = QuestionBank.query.get_or_404(bank_id)
-    return jsonify([_serialize_question(q) for q in bank.questions])
+    questions = bank.questions
+
+    language = request.args.get("language")
+    difficulty = request.args.get("difficulty")
+
+    if language:
+        questions = [q for q in questions if q.code_programming_language and q.code_programming_language.lower() == language.lower()]
+
+    if difficulty:
+        questions = [q for q in questions if q.difficulty.value == difficulty]
+
+    return jsonify([_serialize_question(q) for q in questions])
 
 
 @bank_bp.route("/<int:bank_id>/questions", methods=["POST"])
 @token_required
 def assign_questions(bank_id):
-    """Assign questions to a bank.
+    """Assign existing questions to a bank. Questions are independent entities and can belong to multiple banks.
     ---
     tags:
-      - Question Banks
+      - Bank Questions
     security:
       - Bearer: []
     parameters:
@@ -197,8 +313,10 @@ def assign_questions(bank_id):
         in: path
         type: integer
         required: true
+        description: Question bank ID
       - name: body
         in: body
+        required: true
         schema:
           type: object
           required:
@@ -208,9 +326,32 @@ def assign_questions(bank_id):
               type: array
               items:
                 type: integer
+              description: List of question IDs to assign to this bank
     responses:
       200:
-        description: Questions assigned to bank
+        description: Assignment results
+        schema:
+          type: object
+          properties:
+            assigned:
+              type: array
+              items:
+                type: integer
+              description: IDs of newly assigned questions
+            already_assigned:
+              type: array
+              items:
+                type: integer
+              description: IDs of questions already in this bank
+            not_found:
+              type: array
+              items:
+                type: integer
+              description: IDs that do not match any existing question
+      400:
+        description: Validation error
+      404:
+        description: Question bank not found
     """
     bank = QuestionBank.query.get_or_404(bank_id)
     try:
@@ -243,10 +384,10 @@ def assign_questions(bank_id):
 @bank_bp.route("/<int:bank_id>/questions", methods=["DELETE"])
 @token_required
 def unassign_questions(bank_id):
-    """Remove questions from a bank (does not delete the questions).
+    """Remove questions from a bank. Does not delete the questions themselves, only removes the association.
     ---
     tags:
-      - Question Banks
+      - Bank Questions
     security:
       - Bearer: []
     parameters:
@@ -254,8 +395,10 @@ def unassign_questions(bank_id):
         in: path
         type: integer
         required: true
+        description: Question bank ID
       - name: body
         in: body
+        required: true
         schema:
           type: object
           required:
@@ -265,9 +408,27 @@ def unassign_questions(bank_id):
               type: array
               items:
                 type: integer
+              description: List of question IDs to remove from this bank
     responses:
       200:
-        description: Questions removed from bank
+        description: Removal results
+        schema:
+          type: object
+          properties:
+            removed:
+              type: array
+              items:
+                type: integer
+              description: IDs of questions removed from the bank
+            not_in_bank:
+              type: array
+              items:
+                type: integer
+              description: IDs that were not assigned to this bank
+      400:
+        description: Validation error
+      404:
+        description: Question bank not found
     """
     bank = QuestionBank.query.get_or_404(bank_id)
     try:
@@ -295,7 +456,7 @@ def export_bank_questions(bank_id):
     """Export all questions from a bank as JSON.
     ---
     tags:
-      - Question Banks
+      - Bank Questions
     security:
       - Bearer: []
     parameters:
@@ -303,9 +464,21 @@ def export_bank_questions(bank_id):
         in: path
         type: integer
         required: true
+        description: Question bank ID
     responses:
       200:
         description: Exported questions for this bank
+        schema:
+          type: object
+          properties:
+            bank_name:
+              type: string
+            questions:
+              type: array
+              items:
+                $ref: '#/definitions/Question'
+      404:
+        description: Question bank not found
     """
     bank = QuestionBank.query.get_or_404(bank_id)
     return jsonify({

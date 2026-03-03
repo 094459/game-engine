@@ -1,7 +1,15 @@
 import enum
+import secrets
+import string
 from datetime import datetime, timezone
 
 from src.extensions import db
+
+
+def _generate_access_code(length=8):
+    """Generate a random alphanumeric access code (case-sensitive)."""
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 class QuestionCategory(enum.Enum):
@@ -31,12 +39,15 @@ class Event(db.Model):
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     name = db.Column(db.String(128), nullable=False, unique=True)
+    access_code = db.Column(db.String(8), nullable=False, unique=True, default=_generate_access_code)
+    question_bank_id = db.Column(db.Integer, db.ForeignKey("question_banks.id"), nullable=False)
     theme = db.Column(db.String(128), nullable=False)
     custom_welcome_text = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     games = db.relationship("Game", backref="event", lazy=True)
+    question_bank = db.relationship("QuestionBank", backref="events", lazy=True)
 
 
 class Player(db.Model):
@@ -44,6 +55,9 @@ class Player(db.Model):
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     name = db.Column(db.String(128), nullable=False)
+    avatar = db.Column(db.String(128), nullable=False)
+    preferred_coding_language = db.Column(db.String(64), nullable=False)
+    difficulty = db.Column(db.Enum(QuestionDifficulty), nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
@@ -119,6 +133,8 @@ class GamePlayer(db.Model):
     game_id = db.Column(db.Integer, db.ForeignKey("games.id"), nullable=False)
     player_id = db.Column(db.Integer, db.ForeignKey("players.id"), nullable=False)
     score = db.Column(db.Integer, nullable=False, default=0)
+    time_taken_seconds = db.Column(db.Integer, nullable=True)
+    completed_at = db.Column(db.DateTime, nullable=True)
     joined_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (db.UniqueConstraint("game_id", "player_id", name="uq_game_player"),)

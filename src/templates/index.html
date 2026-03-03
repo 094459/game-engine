@@ -210,6 +210,14 @@
                     <input type="text" class="form-control mb-1" id="q-opt-3" placeholder="Option D">
                 </div>
                 <div id="coding-fields" class="d-none">
+                    <div class="mb-2">
+                        <label class="form-label">Programming Language</label>
+                        <select class="form-select" id="q-code-lang">
+                            <option value="python">Python</option>
+                            <option value="java">Java</option>
+                            <option value="typescript">TypeScript</option>
+                        </select>
+                    </div>
                     <div class="row mb-2">
                         <div class="col-md-6">
                             <label class="form-label">Sample Input (Hint)</label>
@@ -354,6 +362,7 @@ function showCreateQuestionModal() {
     document.getElementById('edit-question-id').value = '';
     ['q-category', 'q-difficulty'].forEach(id => document.getElementById(id).selectedIndex = 0);
     ['q-description', 'q-correct-answer', 'q-hint', 'q-sample-input', 'q-sample-output', 'q-hidden-input', 'q-hidden-output'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('q-code-lang').selectedIndex = 0;
     [0,1,2,3].forEach(i => document.getElementById(`q-opt-${i}`).value = '');
     toggleQuestionFields();
     new bootstrap.Modal(document.getElementById('questionModal')).show();
@@ -372,6 +381,7 @@ function editQuestion(q) {
     document.getElementById('q-sample-output').value = q.code_sample_output || '';
     document.getElementById('q-hidden-input').value = q.code_hidden_input || '';
     document.getElementById('q-hidden-output').value = q.code_hidden_output || '';
+    document.getElementById('q-code-lang').value = q.code_programming_language || 'python';
     toggleQuestionFields();
     new bootstrap.Modal(document.getElementById('questionModal')).show();
 }
@@ -388,6 +398,7 @@ async function saveQuestion() {
     };
     if (cat === 'MultipleChoice') { body.options = [0,1,2,3].map(i => document.getElementById(`q-opt-${i}`).value).filter(Boolean); }
     if (cat === 'Coding') {
+        body.code_programming_language = document.getElementById('q-code-lang').value;
         body.code_sample_input = document.getElementById('q-sample-input').value || null;
         body.code_sample_output = document.getElementById('q-sample-output').value || null;
         body.code_hidden_input = document.getElementById('q-hidden-input').value || null;
