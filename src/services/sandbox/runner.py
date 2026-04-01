@@ -17,6 +17,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ def run_code(language: str, code: str, stdin_data: str = "") -> dict:
     lang_key = language.lower().strip()
     image = SANDBOX_IMAGES.get(lang_key)
     if not image:
+        logger.warning("Unsupported language requested: %s", language)
         return {
             "success": False,
             "stdout": "",
@@ -61,15 +63,37 @@ def run_code(language: str, code: str, stdin_data: str = "") -> dict:
             "timed_out": False,
         }
 
+    logger.info("Sandbox run starting: language=%s, image=%s, code_length=%d", lang_key, image, len(code))
+    start_time = time.monotonic()
+
     try:
         if lang_key == "python":
-            return _run_python(image, code, stdin_data)
+            result = _run_python(image, code, stdin_data)
         elif lang_key == "java":
-            return _run_java(image, code, stdin_data)
+            result = _run_java(image, code, stdin_data)
         elif lang_key == "typescript":
-            return _run_typescript(image, code, stdin_data)
+            result = _run_typescript(image, code, stdin_data)
+        else:
+            result = None
+
+        elapsed = time.monotonic() - start_time
+
+        if result is None:
+            logger.error("Sandbox run failed: language=%s matched image but no runner", lang_key)
+            return {"success": False, "stdout": "", "stderr": f"No runner for {language}", "timed_out": False}
+
+        logger.info(
+            "Sandbox run complete: language=%s, success=%s, timed_out=%s, duration=%.2fs, stdout_length=%d, stderr_length=%d",
+            lang_key, result["success"], result["timed_out"], elapsed, len(result["stdout"]), len(result["stderr"]),
+        )
+        if not result["success"]:
+            logger.info("Sandbox run stderr: language=%s, stderr=%.500s", lang_key, result["stderr"])
+
+        return result
+
     except Exception as e:
-        logger.error(f"Sandbox execution error for {language}: {e}")
+        elapsed = time.monotonic() - start_time
+        logger.error("Sandbox execution error: language=%s, duration=%.2fs, error=%s", language, elapsed, e)
         return {"success": False, "stdout": "", "stderr": str(e), "timed_out": False}
 
 

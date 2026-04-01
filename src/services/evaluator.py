@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import time
 
 from strands import Agent
 from strands.models import BedrockModel
@@ -147,19 +148,30 @@ def evaluate_coding(question, player_code):
 
     language = (question.code_programming_language or "python").lower().strip()
 
+    logger.info(
+        "Coding evaluation started: question_id=%s, language=%s, code_length=%d",
+        question.id, language, len(player_code),
+    )
+    eval_start = time.monotonic()
+
     try:
         hint_passed = False
         hidden_passed = False
 
         # Test with sample input/output
         if question.code_sample_input and question.code_sample_output:
+            logger.info("Running hint test: question_id=%s", question.id)
             hint_passed = _run_sandbox_test(language, player_code, question.code_sample_input, question.code_sample_output)
+            logger.info("Hint test result: question_id=%s, passed=%s", question.id, hint_passed)
 
         # Test with hidden input/output
         if question.code_hidden_input and question.code_hidden_output:
+            logger.info("Running hidden test: question_id=%s", question.id)
             hidden_passed = _run_sandbox_test(language, player_code, question.code_hidden_input, question.code_hidden_output)
+            logger.info("Hidden test result: question_id=%s, passed=%s", question.id, hidden_passed)
 
         is_correct = hint_passed and hidden_passed
+        elapsed = time.monotonic() - eval_start
 
         result_data = {
             "correct": is_correct,
@@ -179,10 +191,16 @@ def evaluate_coding(question, player_code):
             question.times_incorrect += 1
         db.session.commit()
 
+        logger.info(
+            "Coding evaluation complete: question_id=%s, language=%s, correct=%s, hint_passed=%s, hidden_passed=%s, duration=%.2fs",
+            question.id, language, is_correct, hint_passed, hidden_passed, elapsed,
+        )
+
         return result_data
 
     except Exception as e:
-        logger.error(f"Coding evaluation failed: {e}")
+        elapsed = time.monotonic() - eval_start
+        logger.error("Coding evaluation failed: question_id=%s, language=%s, duration=%.2fs, error=%s", question.id, language, elapsed, e)
         return {"correct": False, "grade": "Error", "message": f"Sandbox error: {str(e)}", "hint_passed": False, "hidden_passed": False}
 
 
@@ -194,12 +212,23 @@ def _run_sandbox_test(language, player_code, test_input, expected_output):
     result = run_code(language, wrapped_code)
 
     if not result["success"]:
-        logger.debug(f"Sandbox execution failed: {result['stderr']}")
+        logger.info(
+            "Sandbox execution failed: language=%s, timed_out=%s, stderr=%.500s",
+            language, result["timed_out"], result["stderr"],
+        )
         return False
 
     actual = result["stdout"].strip()
     expected = expected_output.strip()
-    return _normalize_compare(actual, expected)
+    matched = _normalize_compare(actual, expected)
+
+    if not matched:
+        logger.info(
+            "Output mismatch: language=%s, expected=%.200s, actual=%.200s",
+            language, expected, actual,
+        )
+
+    return matched
 
 
 def _wrap_code(language, player_code, test_input):
