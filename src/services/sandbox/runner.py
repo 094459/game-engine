@@ -150,6 +150,7 @@ def _run_java(image: str, code: str, stdin_data: str) -> dict:
         src_path = os.path.join(real_tmpdir, "Solution.java")
         with open(src_path, "w") as f:
             f.write(code)
+        os.chmod(src_path, 0o644)
 
         # Mount source dir read-only, use /tmp inside container for class files
         shell_cmd = (
@@ -173,6 +174,7 @@ def _run_typescript(image: str, code: str, stdin_data: str) -> dict:
         src_path = os.path.join(real_tmpdir, "solution.ts")
         with open(src_path, "w") as f:
             f.write(code)
+        os.chmod(src_path, 0o644)
 
         shell_cmd = "tsx /src/solution.ts"
         return _finch_run(
