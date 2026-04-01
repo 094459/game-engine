@@ -17,7 +17,7 @@ def create_app(config_name=None):
         config_name = os.environ.get("FLASK_ENV", "development")
 
     # Configure application logging
-    log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    log_level = os.environ.get("LOG_LEVEL", "DEBUG").upper()
     logging.basicConfig(
         level=log_level,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
