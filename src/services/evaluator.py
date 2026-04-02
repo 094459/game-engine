@@ -245,15 +245,33 @@ for k, v in inputs.items():
 print(result)
 """
     elif language in ("java",):
+        # Sanitise smart/curly quotes that break javac
+        player_code = player_code.replace("\u201c", '"').replace("\u201d", '"')
+        player_code = player_code.replace("\u2018", "'").replace("\u2019", "'")
+
+        main_method = (
+            f"    public static void main(String[] args) {{\n"
+            f"        String input = {json.dumps(test_input)};\n"
+            f"        System.out.println(solve(input));\n"
+            f"    }}"
+        )
+
+        if "class Solution" in player_code:
+            # Player provided a full class — inject main before the last }
+            last_brace = player_code.rfind("}")
+            return (
+                "import java.util.*;\n\n"
+                + player_code[:last_brace]
+                + "\n" + main_method + "\n"
+                + player_code[last_brace:]
+            )
+
         return f"""import java.util.*;
 
 public class Solution {{
     {player_code}
 
-    public static void main(String[] args) {{
-        String input = {json.dumps(test_input)};
-        System.out.println(solve(input));
-    }}
+{main_method}
 }}
 """
     elif language in ("typescript",):
