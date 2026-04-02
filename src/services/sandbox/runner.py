@@ -1,4 +1,4 @@
-"""Container-based sandbox runner using Finch for secure code execution.
+"""Container-based sandbox runner using Docker for secure code execution.
 
 Security:
 - No network access (--network none)
@@ -36,9 +36,9 @@ SANDBOX_MEMORY = os.environ.get("SANDBOX_MEMORY", "128m")
 SANDBOX_CPUS = os.environ.get("SANDBOX_CPUS", "0.5")
 
 
-def _get_finch_cmd():
-    """Get the finch binary path."""
-    return os.environ.get("FINCH_PATH", "finch")
+def _get_docker_cmd():
+    """Get the docker binary path."""
+    return os.environ.get("DOCKER_PATH", "docker")
 
 
 def run_code(language: str, code: str, stdin_data: str = "") -> dict:
@@ -97,12 +97,12 @@ def run_code(language: str, code: str, stdin_data: str = "") -> dict:
         return {"success": False, "stdout": "", "stderr": str(e), "timed_out": False}
 
 
-def _finch_run(image: str, cmd_args: list, stdin_data: str = "", extra_volumes: list = None) -> dict:
-    """Execute a finch run command with sandbox security constraints."""
-    finch = _get_finch_cmd()
+def _docker_run(image: str, cmd_args: list, stdin_data: str = "", extra_volumes: list = None) -> dict:
+    """Execute a docker run command with sandbox security constraints."""
+    docker = _get_docker_cmd()
 
     run_cmd = [
-        finch, "run", "--rm",
+        docker, "run", "--rm",
         "--network", "none",
         "--read-only",
         "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
@@ -139,13 +139,13 @@ def _finch_run(image: str, cmd_args: list, stdin_data: str = "", extra_volumes: 
 
 def _run_python(image: str, code: str, stdin_data: str) -> dict:
     """Run Python code. Passed directly via entrypoint arg."""
-    return _finch_run(image, [code], stdin_data)
+    return _docker_run(image, [code], stdin_data)
 
 
 def _run_java(image: str, code: str, stdin_data: str) -> dict:
     """Run Java code. Write to a temp file, mount read-only, compile and run."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Resolve symlinks for Finch VM volume mounts (macOS /var -> /private/var)
+        # Resolve symlinks for volume mounts (macOS /var -> /private/var)
         real_tmpdir = os.path.realpath(tmpdir)
         os.chmod(real_tmpdir, 0o755)
         src_path = os.path.join(real_tmpdir, "Solution.java")
@@ -159,7 +159,7 @@ def _run_java(image: str, code: str, stdin_data: str) -> dict:
             "cd /tmp && "
             "java Solution.java"
         )
-        return _finch_run(
+        return _docker_run(
             image,
             [shell_cmd],
             stdin_data,
@@ -170,7 +170,7 @@ def _run_java(image: str, code: str, stdin_data: str) -> dict:
 def _run_typescript(image: str, code: str, stdin_data: str) -> dict:
     """Run TypeScript code. Write to temp file, mount read-only, execute with tsx."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Resolve symlinks for Finch VM volume mounts (macOS /var -> /private/var)
+        # Resolve symlinks for volume mounts (macOS /var -> /private/var)
         real_tmpdir = os.path.realpath(tmpdir)
         os.chmod(real_tmpdir, 0o755)
         src_path = os.path.join(real_tmpdir, "solution.ts")
@@ -179,7 +179,7 @@ def _run_typescript(image: str, code: str, stdin_data: str) -> dict:
         os.chmod(src_path, 0o644)
 
         shell_cmd = "tsx /src/solution.ts"
-        return _finch_run(
+        return _docker_run(
             image,
             [shell_cmd],
             stdin_data,

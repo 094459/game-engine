@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build sandbox container images using Finch
+# Build sandbox container images using Docker
 # Usage: ./build_images.sh
 
 set -e
